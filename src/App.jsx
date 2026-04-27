@@ -87,7 +87,6 @@ function App() {
         setUserRole(perfil.rol);
         setView('admin');
       } else {
-        alert("🚫 No tienes permisos de administrador.");
       }
     } else {
       setUserRole(null);
