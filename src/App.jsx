@@ -252,7 +252,7 @@ function VistaCatalogo({ productos, registrarVenta, ventas }) {
               <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100 flex flex-col items-center text-center">
                 <div className="w-12 h-12 bg-[#00cfba] rounded-xl mb-4 flex items-center justify-center text-white font-black italic">Bre-B</div>
                 <p className="text-[10px] font-black text-slate-400 uppercase mb-1">Llave Bre-B</p>
-                <p className="font-black text-slate-700 text-lg mb-4">@garces812</p>g
+                <p className="font-black text-slate-700 text-lg mb-4">@garces812</p>
                 <button onClick={() => copiar("garces812")} className="bg-white px-4 py-2 rounded-xl text-[10px] font-black shadow-sm hover:bg-[#f989b7] hover:text-white transition-all uppercase">Copiar llave</button>
               </div>
 
