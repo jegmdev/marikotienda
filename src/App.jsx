@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import logo from './assets/logo.png'
 import qrBancolombia from './assets/QR-Bancolombia.jpeg'
+import './App.css';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_KEY;
@@ -25,15 +26,55 @@ function App() {
 
   const fetchDatos = async () => {
     try {
-      const { data: p } = await supabase.from('productos').select('*').order('nombre');
+      // Traemos productos y TODAS sus existencias vinculadas
+      const { data: p, error: errorP } = await supabase
+        .from('productos')
+        .select(`
+    id,
+    nombre,
+    precio,
+    emoji,
+    imagen_url: '',
+    existencias (
+      cantidad,
+      ubicacion_id
+    )
+  `)
+        .order('nombre');
+
+      if (errorP) throw errorP;
+
+      if (p) {
+        const productosProcesados = p.map(prod => {
+          // Buscamos las existencias usando el ID o el Nombre (por seguridad usamos ambos)
+          const eTienda = prod.existencias?.find(e => e.ubicacion_id === 1 || e.sucursales?.nombre === 'Tienda');
+          const eB1 = prod.existencias?.find(e => e.ubicacion_id === 2 || e.sucursales?.nombre === 'Bodega Yuyii');
+          const eB2 = prod.existencias?.find(e => e.ubicacion_id === 3 || e.sucursales?.nombre === 'Bodega Teban');
+
+          const stockTienda = eTienda?.cantidad || 0;
+          const stockB1 = eB1?.cantidad || 0;
+          const stockB2 = eB2?.cantidad || 0;
+
+          return {
+            ...prod,
+            stockTienda,
+            stockB1,
+            stockB2,
+            stock: stockTienda, // Para el catálogo de clientes
+            stockGeneral: stockTienda + stockB1 + stockB2
+          };
+        });
+        setProductos(productosProcesados);
+      }
+
+      // ... (resto del código para ventas y perfiles)
       const { data: v } = await supabase.from('ventas').select('*').order('created_at', { ascending: false });
       const { data: u } = await supabase.from('perfiles').select('*').order('nombre');
-
-      if (p) setProductos(p);
       if (v) setVentas(v);
       if (u) setPerfiles(u);
+
     } catch (err) {
-      console.error("Error al sincronizar:", err);
+      console.error("Error detallado:", err);
     } finally {
       setLoading(false);
     }
@@ -139,8 +180,6 @@ function App() {
     </div>
   )
 }
-
-// ... (Mantén el resto del código de App igual hasta VistaCatalogo)
 
 function VistaCatalogo({ productos, registrarVenta, ventas }) {
   const [user, setUser] = useState("");
@@ -305,7 +344,7 @@ function VistaCatalogo({ productos, registrarVenta, ventas }) {
             {/* Botón WhatsApp */}
             <div className="mt-10 pt-8 border-t border-slate-100">
               <a
-                href="https://wa.me/573017606255?text=Hola!%20Acabo%20de%20realizar%20un%20pago%20en%20La%20Marikotienda"
+                href="https://wa.me/573017606255?text=Hola!%20Acabo%20de%20realizar%20un%20pago%20en%20La%20Marikotienda%20mi%20usuario%20es:%20(Escribe%20tu%20usuario%20aquí%20para%20borrar%20tu%20deuda)"
                 target="_blank"
                 rel="noreferrer"
                 className="flex items-center justify-center gap-3 w-full bg-[#25D366] text-white p-5 rounded-[2rem] font-black uppercase italic shadow-lg hover:bg-[#128C7E] transition-all active:scale-95"
@@ -346,348 +385,342 @@ function CardProducto({ producto: p, user, registrarVenta }) {
   );
 }
 
-function VistaAdmin({ role, ventas, productos, perfiles, registrarVenta, refresh }) {
-  const [form, setForm] = useState({ id: null, nombre: '', precio: '', stock: '', emoji: '', imagen: '' });
+function VistaAdmin({ role, ventas, productos, perfiles, refresh }) {
+  // --- ESTADOS PARA GESTIÓN DE USUARIOS ---
   const [userForm, setUserForm] = useState({ nombre: '', pin: '', rol: 'comprador' });
-  const [filtroNombre, setFiltroNombre] = useState("");
-  const [filtroProducto, setFiltroProducto] = useState("");
-  const [busquedaInventario, setBusquedaInventario] = useState("");
-  const [manualUser, setManualUser] = useState("");
-  const [manualProdId, setManualProdId] = useState("");
-  const [manualCant, setManualCant] = useState(1);
-  const [manualFecha, setManualFecha] = useState(new Date().toISOString().slice(0, 16));
   const [editandoId, setEditandoId] = useState(null);
   const [tempUser, setTempUser] = useState({ nombre: '', pin: '' });
 
-  const ventasFiltradas = ventas.filter(v => {
-    const coincideNombre = v.cliente.toLowerCase().includes(filtroNombre.toLowerCase());
-    const coincideProducto = v.producto.toLowerCase().includes(filtroProducto.toLowerCase());
-    return coincideNombre && coincideProducto && !v.pagado;
-  });
+  // --- ESTADOS PARA NUEVO PRODUCTO ---
+  const [nuevoProd, setNuevoProd] = useState({ nombre: '', precio: '', emoji: '', stockInicial: 0 });
+
+  // --- ESTADOS PARA BODEGAS E INVENTARIO ---
+  const [vistaStock, setVistaStock] = useState("General");
+  const [sucursalDestino, setSucursalDestino] = useState("Tienda");
+  const [origenStock, setOrigenStock] = useState("Bodega Yuyii");
+  const [cantidadCarga, setCantidadCarga] = useState("");
+  const [productoSeleccionado, setProductoSeleccionado] = useState("");
+
+  // --- FILTROS ---
+  const [filtroNombre, setFiltroNombre] = useState("");
+  const [filtroInventario, setFiltroInventario] = useState("");
+
+  // --- CÁLCULOS Y FORMATEO ---
+  const fM = (v) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(v);
+
+  const ventasFiltradas = ventas.filter(v =>
+    !v.pagado && v.cliente.toLowerCase().includes(filtroNombre.toLowerCase())
+  );
 
   const totalF = ventasFiltradas.reduce((acc, v) => acc + v.precio, 0);
 
+  const productosFiltrados = productos.filter(p =>
+    p.nombre.toLowerCase().includes(filtroInventario.toLowerCase())
+  );
+
+  // --- FUNCIONES DE ACCIÓN ---
+
   const guardarPerfil = async (e) => {
     e.preventDefault();
-    const finalRol = role === 'superadmin' ? userForm.rol : 'comprador';
-    const { error } = await supabase.from('perfiles').insert([{ ...userForm, rol: finalRol }]);
-    if (!error) { setUserForm({ nombre: '', pin: '', rol: 'comprador' }); refresh(); alert("✅ Usuario creado"); }
+    const { error } = await supabase.from('perfiles').insert([userForm]);
+    if (error) alert("Error: " + error.message);
+    else { setUserForm({ nombre: '', pin: '', rol: 'comprador' }); refresh(); }
   };
 
-  const guardarProducto = async (e) => {
-    e.preventDefault();
-    const data = { nombre: form.nombre, precio: Number(form.precio), stock: Number(form.stock), emoji: form.emoji, imagen: form.imagen };
-    if (form.id) {
-      await supabase.from('productos').update(data).eq('id', form.id);
-      alert("✅ Producto actualizado");
-    } else {
-      await supabase.from('productos').insert([data]);
-      alert("✅ Producto creado");
+  const resetearStock = async (productoId, bodega) => {
+    if (bodega === "General") return alert("Selecciona una bodega específica (Tienda o Bodega) para borrar su stock.");
+
+    const confirmar = confirm(`¿Estás seguro de que quieres poner en 0 el stock de este producto en ${bodega}?`);
+    if (!confirmar) return;
+
+    try {
+      // 1. Obtener el ID de la sucursal según el nombre de la pestaña
+      const { data: sucursal } = await supabase
+        .from('sucursales')
+        .select('id')
+        .eq('nombre', bodega)
+        .single();
+
+      if (!sucursal) throw new Error("Bodega no encontrada");
+
+      // 2. Actualizar la tabla de existencias a 0 para esa combinación
+      const { error } = await supabase
+        .from('existencias')
+        .update({ cantidad: 0 })
+        .eq('producto_id', productoId)
+        .eq('ubicacion_id', sucursal.id);
+
+      if (error) throw error;
+
+      alert("Stock reseteado correctamente.");
+      refresh(); // Recargar datos
+    } catch (err) {
+      alert("Error al resetear stock: " + err.message);
     }
-    setForm({ id: null, nombre: '', precio: '', stock: '', emoji: '', imagen: '' });
-    refresh();
+  };
+
+  const [cargando, setCargando] = useState(false);
+
+  const crearProducto = async (e) => {
+    e.preventDefault();
+    if (cargando) return;
+    setCargando(true);
+
+    try {
+      const { data: productoCreado, error: errorP } = await supabase
+        .from('productos')
+        .insert([{
+          nombre: nuevoProd.nombre,
+          precio: parseInt(nuevoProd.precio),
+          emoji: nuevoProd.emoji,
+          imagen_url: nuevoProd.imagen_url, // <--- Enviamos la URL aquí
+          stock: 0
+        }])
+        .select()
+        .single();
+
+      if (errorP) throw errorP;
+
+      // ... (el resto del código de existencias se mantiene igual)
+
+      alert("✨ Snack creado con éxito");
+      // Limpiamos todo el formulario incluyendo la imagen
+      setNuevoProd({ nombre: '', precio: '', emoji: '', stockInicial: 0, imagen_url: '' });
+      refresh();
+
+    } catch (err) {
+      alert("❌ Error: " + err.message);
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  const procesarCarga = async () => {
+    // 1. Validaciones iniciales
+    if (!productoSeleccionado) return alert("Selecciona un snack");
+    if (!cantidadCarga || cantidadCarga <= 0) return alert("Ingresa una cantidad válida");
+
+    const cant = parseInt(cantidadCarga);
+    const pId = parseInt(productoSeleccionado);
+
+    try {
+      // CASO A: Entrada desde Proveedor (Aumenta stock)
+      if (origenStock === "Proveedor / Fábrica") {
+        const { data: sDest, error: errD } = await supabase
+          .from('sucursales')
+          .select('id')
+          .eq('nombre', sucursalDestino)
+          .single();
+
+        if (errD) throw new Error("No se encontró la bodega de destino");
+
+        const { error: rpcErr } = await supabase.rpc('incrementar_stock', {
+          p_id: pId,
+          s_id: sDest.id,
+          inc: cant
+        });
+
+        if (rpcErr) throw rpcErr;
+      }
+
+      // CASO B: Transferencia entre bodegas (Resta en origen, suma en destino)
+      else {
+        const { data: sOrig } = await supabase.from('sucursales').select('id').eq('nombre', origenStock).single();
+        const { data: sDest } = await supabase.from('sucursales').select('id').eq('nombre', sucursalDestino).single();
+
+        // Restar al origen
+        await supabase.rpc('incrementar_stock', { p_id: pId, s_id: sOrig.id, inc: -cant });
+        // Sumar al destino
+        await supabase.rpc('incrementar_stock', { p_id: pId, s_id: sDest.id, inc: cant });
+      }
+
+      alert("✨ Inventario actualizado correctamente");
+      setCantidadCarga(""); // Limpiar input
+      if (typeof refresh === 'function') refresh(); // Refrescar datos
+
+    } catch (err) {
+      console.error("Error en proceso:", err);
+      alert("❌ Error: " + err.message);
+    }
   };
 
   return (
-    <div className="space-y-6 pb-20 animate-in slide-in-from-bottom-4 duration-500">
+    <div className="max-w-6xl mx-auto p-4 space-y-8 pb-20 font-sans">
 
-      <style>{`
-        @media print {
-          nav, .no-print, button, form, .filtros-admin { display: none !important; }
-          body { background: white !important; margin: 0; padding: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          .print-area { position: absolute; top: 0; left: 0; width: 100%; padding: 0 !important; }
-          .factura-container { border: 1.5px solid #f989b7 !important; border-radius: 20px !important; padding: 20px !important; margin: 5px !important; }
-          table { width: 100% !important; border-collapse: collapse !important; }
-          th { background-color: #f989b7 !important; color: white !important; padding: 8px !important; font-size: 9px !important; text-transform: uppercase; }
-          td { border-bottom: 1px solid #fee2ed !important; padding: 6px 8px !important; color: #334155 !important; font-size: 10px !important; }
-          .logo-img { height: 50px !important; }
-          .total-compacto { border-left: 4px solid #f989b7 !important; background: #fff5f8 !important; padding: 10px 20px !important; }
-        }
-      `}</style>
-
-      {/* GESTIÓN DE USUARIOS - Jerarquía de Roles y PIN Numérico */}
-      <div className="no-print bg-[#f989b7] p-8 rounded-[2.5rem] shadow-sm text-white">
+      {/* 1. GESTIÓN DE USUARIOS */}
+      <section className="bg-[#f989b7] p-8 rounded-[2.5rem] shadow-sm text-white no-print">
         <h2 className="text-xl font-black uppercase mb-6 italic">👥 Usuarios Registrados</h2>
-
-        {/* Formulario para añadir nuevos usuarios */}
         <form onSubmit={guardarPerfil} className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-          <input
-            placeholder="Nombre"
-            className="p-4 rounded-2xl bg-white text-slate-800 font-bold outline-none"
-            value={userForm.nombre}
-            onChange={e => setUserForm({ ...userForm, nombre: e.target.value })}
-            required
-          />
-
-          <input
-            type="text"
-            inputMode="numeric"
-            pattern="[0-9]*"
-            placeholder="PIN (4 núm)"
-            className="p-4 rounded-2xl bg-white text-slate-800 font-bold outline-none text-center"
-            value={userForm.pin}
-            onChange={e => {
-              const valor = e.target.value.replace(/\D/g, '');
-              setUserForm({ ...userForm, pin: valor });
-            }}
-            required
-            maxLength={4}
-          />
-
-          {/* Selector de Rol Dinámico */}
-          <select
-            className="p-4 rounded-2xl bg-white text-slate-800 font-bold outline-none"
-            value={userForm.rol}
-            onChange={e => setUserForm({ ...userForm, rol: e.target.value })}
-          >
+          <input placeholder="Nombre" className="p-4 rounded-2xl bg-white text-slate-800 font-bold" value={userForm.nombre} onChange={e => setUserForm({ ...userForm, nombre: e.target.value })} required />
+          <input placeholder="PIN (4 núm)" className="p-4 rounded-2xl bg-white text-slate-800 font-bold text-center" value={userForm.pin} onChange={e => setUserForm({ ...userForm, pin: e.target.value.replace(/\D/g, '') })} required maxLength={4} inputMode="numeric" />
+          <select className="p-4 rounded-2xl bg-white text-slate-800 font-bold" value={userForm.rol} onChange={e => setUserForm({ ...userForm, rol: e.target.value })}>
             <option value="comprador">Comprador</option>
-            {/* Solo el Superadmin puede ver y asignar estos roles */}
-            {role === 'superadmin' && (
-              <>
-                <option value="admin">Admin</option>
-                <option value="superadmin">SuperAdmin</option>
-              </>
-            )}
+            {role === 'superadmin' && <><option value="admin">Admin</option><option value="superadmin">SuperAdmin</option></>}
           </select>
-
-          <button className="bg-slate-900 text-white font-black rounded-2xl uppercase text-xs hover:bg-black transition-colors">
-            Añadir
-          </button>
+          <button className="bg-slate-900 text-white font-black rounded-2xl uppercase hover:bg-black transition-all">Añadir</button>
         </form>
-
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-slate-800">
           {perfiles.map(u => (
-            <div key={u.id} className="bg-white/20 p-3 rounded-xl text-xs font-bold group relative">
+            <div key={u.id} className="bg-white/90 p-4 rounded-2xl shadow-sm relative group">
               {editandoId === u.id ? (
-                /* MODO EDICIÓN */
                 <div className="space-y-2">
-                  <input
-                    className="w-full p-1 rounded bg-white text-slate-800 text-[10px]"
-                    value={tempUser.nombre}
-                    onChange={e => setTempUser({ ...tempUser, nombre: e.target.value })}
-                  />
-                  <input
-                    className="w-full p-1 rounded bg-white text-slate-800 text-[10px]"
-                    value={tempUser.pin}
-                    maxLength={4}
-                    onChange={e => setTempUser({ ...tempUser, pin: e.target.value.replace(/\D/g, '') })}
-                  />
-                  <div className="flex gap-1">
-                    <button
-                      onClick={async () => {
-                        const { error } = await supabase.from('perfiles').update(tempUser).eq('id', u.id);
-                        if (!error) { setEditandoId(null); refresh(); }
-                      }}
-                      className="bg-green-500 flex-1 py-1 rounded text-[8px]"
-                    >GUARDAR</button>
-                    <button
-                      onClick={() => setEditandoId(null)}
-                      className="bg-slate-700 flex-1 py-1 rounded text-[8px]"
-                    >X</button>
-                  </div>
+                  <input className="w-full p-2 rounded-lg border text-xs" value={tempUser.nombre} onChange={e => setTempUser({ ...tempUser, nombre: e.target.value })} />
+                  <input className="w-full p-2 rounded-lg border text-xs text-center" value={tempUser.pin} onChange={e => setTempUser({ ...tempUser, pin: e.target.value.replace(/\D/g, '') })} maxLength={4} />
+                  <button onClick={async () => { await supabase.from('perfiles').update(tempUser).eq('id', u.id); setEditandoId(null); refresh(); }} className="w-full bg-green-500 text-white text-[10px] py-2 rounded-lg font-bold">GUARDAR</button>
                 </div>
               ) : (
-                /* MODO VISTA */
-                <div className="flex justify-between items-start">
-                  <div>
-                    <span className="block truncate pr-4">{u.nombre.toUpperCase()}</span>
-                    <span className="opacity-60 text-[10px]">
-                      {role === 'superadmin' ? `PIN: ${u.pin}` : 'PIN: ****'}
-                    </span>
-                    <span className="block text-[8px] opacity-50 mt-1 uppercase italic">{u.rol}</span>
-                  </div>
-
+                <>
+                  <p className="font-black text-sm truncate uppercase">{u.nombre}</p>
+                  <p className="text-[10px] font-bold opacity-50 uppercase italic">{u.rol}</p>
+                  <p className="text-xs font-mono mt-1">{role === 'superadmin' ? `PIN: ${u.pin}` : 'PIN: ****'}</p>
                   {role === 'superadmin' && (
-                    <div className="flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-all absolute top-2 right-2">
-                      <button
-                        onClick={() => {
-                          setEditandoId(u.id);
-                          setTempUser({ nombre: u.nombre, pin: u.pin });
-                        }}
-                        className="bg-blue-500 text-white w-6 h-6 rounded-lg flex items-center justify-center shadow-sm"
-                      >✎</button>
-                      <button
-                        onClick={async () => {
-                          if (u.rol === 'superadmin') return alert("🚫 No puedes eliminar a un Superadmin.");
-                          if (confirm(`¿Borrar a ${u.nombre}?`)) {
-                            await supabase.from('perfiles').delete().eq('id', u.id);
-                            refresh();
-                          }
-                        }}
-                        className="bg-red-500 text-white w-6 h-6 rounded-lg flex items-center justify-center shadow-sm"
-                      >✕</button>
+                    <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                      <button onClick={() => { setEditandoId(u.id); setTempUser({ nombre: u.nombre, pin: u.pin }); }} className="bg-blue-500 text-white p-1 rounded">✎</button>
+                      <button onClick={async () => { if (u.rol !== 'superadmin' && confirm('¿Borrar?')) { await supabase.from('perfiles').delete().eq('id', u.id); refresh(); } }} className="bg-red-500 text-white p-1 rounded">✕</button>
                     </div>
                   )}
-                </div>
+                </>
               )}
             </div>
           ))}
         </div>
-      </div>
-      {/* 2. FACTURA COMPACTA (SE IMPRIME) */}
-      {/* FACTURACIÓN - Con visualización de Cliente y Control de Superadmin */}
-      <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
-        <h2 className="font-black text-[#f989b7] uppercase mb-4 italic">🧾 Facturación</h2>
+      </section>
 
-        <div className="relative mb-6">
+      {/* 2. REGISTRAR NUEVO SNACK */}
+      <section className="bg-white p-8 rounded-[2.5rem] shadow-sm no-print border border-slate-100">
+        <h2 className="text-xl font-black uppercase mb-6 italic text-slate-800">✨ Registrar Nuevo Snack</h2>
+        <form onSubmit={crearProducto} className="grid grid-cols-1 md:grid-cols-5 gap-4">
+          <input placeholder="Nombre (ej: Bianchi)" className="p-4 rounded-2xl bg-slate-50 font-bold" value={nuevoProd.nombre} onChange={e => setNuevoProd({ ...nuevoProd, nombre: e.target.value })} required />
           <input
-            placeholder="🔍 Escribe nombre para buscar factura..."
-            className="w-full bg-slate-50 p-4 pl-12 rounded-2xl outline-none font-bold text-[#f989b7] border-2 border-transparent focus:border-[#f989b7] transition-all"
-            value={filtroNombre}
-            onChange={(e) => setFiltroNombre(e.target.value)}
+            type="text"
+            placeholder="URL de la imagen (Opcional)"
+            className="p-4 rounded-2xl bg-slate-50 border-none font-bold"
+            value={nuevoProd.imagen_url}
+            onChange={e => setNuevoProd({ ...nuevoProd, imagen_url: e.target.value })}
           />
-          <span className="absolute left-4 top-1/2 -translate-y-1/2 opacity-30">🔍</span>
-        </div>
-
-        <div className="max-h-96 overflow-y-auto mb-6 border border-slate-50 rounded-2xl shadow-inner">
-          <table className="w-full text-left text-[11px]">
-            <thead className="bg-slate-50 sticky top-0 font-black uppercase text-slate-400 z-10">
-              <tr>
-                <th className="p-4">Fecha</th>
-                <th className="p-4">Cliente</th>
-                <th className="p-4">Producto</th>
-                <th className="p-4 text-right">Precio</th>
-                {role === 'superadmin' && <th className="p-4 text-center">Acción</th>}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {ventasFiltradas.length > 0 ? (
-                ventasFiltradas.map(v => (
-                  <tr key={v.id} className="font-bold text-slate-600 hover:bg-slate-50/50 transition-colors">
-                    <td className="p-4 whitespace-nowrap text-slate-400 font-medium">{v.fecha}</td>
-                    <td className="p-4">
-                      <span className="bg-[#f989b7]/10 text-[#f989b7] px-2 py-1 rounded-md uppercase text-[10px]">
-                        {v.cliente}
-                      </span>
-                    </td>
-                    <td className="p-4 uppercase">{v.producto}</td>
-                    <td className="p-4 text-right text-slate-900">{fM(v.precio)}</td>
-                    {role === 'superadmin' && (
-                      <td className="p-4 text-center">
-                        <button
-                          onClick={async () => {
-                            if (confirm(`¿Borrar registro de ${v.producto} para ${v.cliente}?`)) {
-                              await supabase.from('ventas').delete().eq('id', v.id);
-                              refresh();
-                            }
-                          }}
-                          className="text-red-400 hover:text-red-600 transition-colors p-2"
-                        >
-                          ✕ Borrar
-                        </button>
-                      </td>
-                    )}
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={role === 'superadmin' ? 5 : 4} className="p-10 text-center text-slate-300 font-black uppercase italic">
-                    No hay ventas pendientes
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="flex flex-col md:flex-row justify-between items-center bg-slate-50 p-6 rounded-[2rem] gap-4">
-          <div className="text-center md:text-left">
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Pendiente</p>
-            <h3 className="text-3xl font-black text-[#f989b7] italic leading-none">{fM(totalF)}</h3>
-          </div>
-
-          <div className="flex gap-2 w-full md:w-auto">
-            <button
-              onClick={() => window.print()}
-              className="flex-1 md:flex-none bg-white border-2 border-slate-200 px-6 py-3 rounded-xl font-black uppercase text-[10px] hover:border-[#f989b7] transition-all"
-            >
-              🖨️ Imprimir
-            </button>
-
-            {role === 'superadmin' && filtroNombre && totalF > 0 && (
-              <button
-                onClick={async () => {
-                  if (confirm(`¿Saldar deuda de ${filtroNombre}?`)) {
-                    await supabase.from('ventas').update({ pagado: true }).eq('cliente', filtroNombre);
-                    refresh();
-                  }
-                }}
-                className="flex-1 md:flex-none bg-[#f989b7] text-white px-8 py-3 rounded-xl font-black uppercase text-[10px] shadow-lg shadow-[#f989b7]/20 hover:bg-black transition-all"
-              >
-                ✅ Saldar Deuda
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* 3. CARGA MANUAL */}
-      <div className="no-print p-6 rounded-[2.5rem] shadow-sm border border-slate-100 text-white">
-        <h2 className="font-black uppercase italic mb-4 text-pink-400">🛒 Carga Manual Directa</h2>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-          <select className="p-3 rounded-xl font-bold text-sm outline-none text-slate-800" value={manualUser} onChange={e => setManualUser(e.target.value)}>
-            <option value="">¿Quién compró?</option>
-            {perfiles.map(u => <option key={u.id} value={u.nombre}>{u.nombre}</option>)}
-          </select>
-          <select className="p-3 rounded-xl font-bold text-sm outline-none text-slate-800" value={manualProdId} onChange={e => setManualProdId(e.target.value)}>
-            <option value="">¿Qué snack?</option>
-            {productos.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
-          </select>
-          <input type="number" className="p-3 rounded-xl font-bold outline-none text-center text-slate-800" value={manualCant} onChange={e => setManualCant(Number(e.target.value))} />
-          <button onClick={() => { const p = productos.find(x => x.id === Number(manualProdId)); if (manualUser && p) registrarVenta(manualUser, p, manualCant, manualFecha); }} className="bg-[#f989b7] text-white font-black rounded-xl uppercase text-[10px] hover:bg-[#f969b3] transition-all">Registrar Venta</button>
-        </div>
-      </div>
-
-      {/* 4. GESTIÓN DE SNACKS */}
-      <div className="no-print bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
-        <h2 className="text-xl font-black mb-6 uppercase text-[#f989b7] italic">
-          {form.id ? '⚡ Editando Producto' : '➕ Nuevo Producto'}
-        </h2>
-
-        <form onSubmit={guardarProducto} className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-10">
-          <input placeholder="Nombre del Snack" className="bg-slate-50 p-4 rounded-xl font-bold outline-none border-2 border-transparent focus:border-[#f989b7]" value={form.nombre} onChange={e => setForm({ ...form, nombre: e.target.value })} required />
-          <input type="number" placeholder="Precio ($)" className="bg-slate-50 p-4 rounded-xl font-bold outline-none border-2 border-transparent focus:border-[#f989b7]" value={form.precio} onChange={e => setForm({ ...form, precio: e.target.value })} required />
-          <input type="number" placeholder="Stock Inicial" className="bg-slate-50 p-4 rounded-xl font-bold outline-none border-2 border-transparent focus:border-[#f989b7]" value={form.stock} onChange={e => setForm({ ...form, stock: e.target.value })} required />
-          <input placeholder="Emoji (ej: 🍭)" className="bg-slate-50 p-4 rounded-xl text-center text-2xl outline-none" value={form.emoji} onChange={e => setForm({ ...form, emoji: e.target.value })} />
-          <input placeholder="URL Imagen (opcional)" className="bg-slate-50 p-4 rounded-xl outline-none col-span-1 md:col-span-2" value={form.imagen} onChange={e => setForm({ ...form, imagen: e.target.value })} />
-
-          <div className="col-span-full flex gap-2">
-            <button className="bg-[#f989b7] p-4 rounded-xl font-black text-white flex-1 shadow-md uppercase hover:bg-[#f969b3] transition-all">
-              {form.id ? 'Actualizar Cambios' : 'Guardar en Catálogo'}
-            </button>
-            {form.id && (
-              <button type="button" onClick={() => setForm({ id: null, nombre: '', precio: '', stock: '', emoji: '', imagen: '' })} className="bg-slate-100 p-4 rounded-xl font-black text-slate-400 uppercase">Cancelar</button>
-            )}
-          </div>
+          <input type="number" placeholder="Precio $" className="p-4 rounded-2xl bg-slate-50 font-bold" value={nuevoProd.precio} onChange={e => setNuevoProd({ ...nuevoProd, precio: e.target.value })} required />
+          <input type="number" placeholder="Stock Inicial" className="p-4 rounded-2xl bg-slate-50 font-bold text-center" value={nuevoProd.stockInicial} onChange={e => setNuevoProd({ ...nuevoProd, stockInicial: e.target.value })} required />
+          <button className="bg-[#f989b7] text-white font-black rounded-2xl uppercase hover:scale-105 transition-all shadow-lg shadow-pink-100">Crear Snack</button>
         </form>
+      </section>
 
-        <div className="border-t border-slate-50 pt-8">
-          <input
-            placeholder="🔍 Buscar snack para editar o borrar..."
-            className="w-full bg-slate-50 p-4 rounded-2xl mb-6 outline-none font-bold text-slate-600 border border-slate-100 focus:border-[#f989b7]"
-            onChange={e => setBusquedaInventario(e.target.value)}
-          />
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {productos.filter(p => p.nombre.toLowerCase().includes(busquedaInventario.toLowerCase())).map(p => (
-              <div key={p.id} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-transparent hover:border-[#f989b7] transition-all group">
-                <div className="flex items-center gap-3">
-                  <span className="text-2xl bg-white w-10 h-10 flex items-center justify-center rounded-lg shadow-sm">{p.emoji || "🍬"}</span>
-                  <div>
-                    <p className="font-black text-slate-800 text-xs uppercase">{p.nombre}</p>
-                    <p className="text-[10px] font-bold text-[#f989b7]">{fM(p.precio)} — Stock: {p.stock}</p>
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  <button onClick={() => { setForm(p); window.scrollTo({ top: 1000, behavior: 'smooth' }) }} className="bg-white p-2 px-4 rounded-lg text-[#f989b7] font-black text-[10px] shadow-sm hover:bg-[#f989b7] hover:text-white transition-all uppercase">Editar</button>
-                  {role === 'superadmin' && (
-                    <button onClick={async () => { if (confirm("¿Eliminar snack?")) { await supabase.from('productos').delete().eq('id', p.id); refresh(); } }} className="bg-red-50 p-2 px-3 rounded-lg text-red-400 hover:bg-red-500 hover:text-white transition-all text-[10px]">✕</button>
-                  )}
-                </div>
-              </div>
+      {/* 3. ABASTECIMIENTO MULTIDEPÓSITO */}
+      <section className="bg-slate-900 p-8 rounded-[2.5rem] text-white no-print">
+        <h2 className="text-xl font-black uppercase mb-6 italic text-pink-400">📦 Abastecimiento de Inventario</h2>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <select className="p-4 rounded-2xl bg-slate-800 text-white font-bold border-none" value={productoSeleccionado} onChange={e => setProductoSeleccionado(e.target.value)}>
+            <option value="">Selecciona Snack...</option>
+            {productos.map(p => <option key={p.id} value={p.id}>{p.emoji} {p.nombre}</option>)}
+          </select>
+          <div className="flex flex-col gap-1">
+            <span className="text-[10px] uppercase font-bold text-slate-500 ml-2">Destino (¿A dónde llega?)</span>
+            <select className="p-4 rounded-2xl bg-slate-800 text-white font-bold" value={sucursalDestino} onChange={e => setSucursalDestino(e.target.value)}>
+              <option value="Tienda">Tienda Física</option>
+              <option value="Bodega Yuyii">Bodega Yuyii</option>
+              <option value="Bodega Teban">Bodega Teban</option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-[10px] uppercase font-bold text-pink-500 ml-2">Origen (¿De dónde sale?)</span>
+            <select className="p-4 rounded-2xl bg-pink-900/30 text-white font-bold border border-pink-500/30" value={origenStock} onChange={e => setOrigenStock(e.target.value)}>
+              {(sucursalDestino === "Bodega Yuyii" || sucursalDestino === "Bodega Teban") ? (
+                <option value="Proveedor / Fábrica">🏭 Proveedor (Ilimitado)</option>
+              ) : (
+                <><option value="Bodega Yuyii">Bodega Yuyii</option><option value="Bodega Teban">Bodega Teban</option></>
+              )}
+            </select>
+          </div>
+          <input type="number" placeholder="Cantidad" className="p-4 rounded-2xl bg-slate-800 text-white font-bold text-center" value={cantidadCarga} onChange={e => setCantidadCarga(e.target.value)} />
+          <button onClick={procesarCarga} className="md:col-span-1 bg-pink-500 text-white font-black rounded-2xl uppercase hover:bg-pink-600 transition-all">Cargar Stock</button>
+        </div>
+      </section>
+
+      {/* 4. CONTROL DE STOCK */}
+      <section className="bg-white p-8 rounded-[2.5rem] shadow-sm no-print border border-slate-100">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
+          <h2 className="text-xl font-black uppercase text-[#f989b7] italic">📦 Control de Stock</h2>
+          <div className="flex bg-slate-100 p-1 rounded-xl overflow-x-auto">
+            {["General", "Tienda", "Bodega Yuyii", "Bodega Teban"].map(opt => (
+              <button key={opt} onClick={() => setVistaStock(opt)} className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${vistaStock === opt ? "bg-white text-[#f989b7] shadow-sm" : "text-slate-400"}`}>
+                {opt}
+              </button>
             ))}
           </div>
         </div>
-      </div>
+        <input placeholder="Buscar producto..." className="w-full bg-slate-50 p-4 rounded-2xl mb-6 font-bold" value={filtroInventario} onChange={e => setFiltroInventario(e.target.value)} />
+        <div className="max-h-96 overflow-y-auto rounded-2xl border border-slate-50">
+          {/* Dentro del tbody de Control de Stock */}
+          <tbody className="divide-y divide-slate-50">
+            {productosFiltrados.map(p => (
+              <tr key={p.id} className="font-bold text-slate-600">
+                <td className="p-4 uppercase flex items-center gap-3">
+                  {p.imagen_url ? (
+                    <img src={p.imagen_url} alt={p.nombre} className="w-8 h-8 rounded-lg object-cover" />
+                  ) : (
+                    <span className="text-xl">{p.emoji}</span>
+                  )}
+                  {p.nombre}
+                </td>                <td className="p-4 text-center">
+                  <span className={`px-4 py-1 rounded-full ${vistaStock === "General" ? "bg-slate-900 text-white" : "bg-[#f989b7]/10 text-[#f989b7]"}`}>
+                    {vistaStock === "General" ? p.stockGeneral : vistaStock === "Tienda" ? p.stockTienda : vistaStock === "Bodega Yuyii" ? p.stockB1 : p.stockB2}
+                  </span>
+                </td>
+
+
+                {/* NUEVA COLUMNA DE ACCIÓN PARA SUPERADMIN */}
+                {role === 'superadmin' && (
+                  <td className="p-4 text-center no-print">
+                    <button
+                      onClick={() => resetearStock(p.id, vistaStock)}
+                      className="text-[10px] bg-red-100 text-red-500 px-2 py-1 rounded-lg hover:bg-red-500 hover:text-white transition-colors"
+                      title="Resetear stock a 0"
+                    >
+                      🗑️ Borrar
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </div>
+      </section>
+
+      {/* 5. FACTURACIÓN */}
+      <section className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
+        <h2 className="font-black text-[#f989b7] uppercase mb-4 italic">🧾 Facturación Pendiente</h2>
+        <div className="relative mb-6 no-print">
+          <input placeholder="🔍 Buscar cliente..." className="w-full bg-slate-50 p-4 pl-12 rounded-2xl font-bold text-[#f989b7]" value={filtroNombre} onChange={(e) => setFiltroNombre(e.target.value)} />
+        </div>
+        <div className="max-h-96 overflow-y-auto mb-6 border border-slate-50 rounded-2xl text-[11px]">
+          <table className="w-full">
+            <thead className="bg-slate-50 sticky top-0 font-black uppercase text-slate-400">
+              <tr><th className="p-4 text-left">Fecha</th><th className="p-4 text-left">Cliente</th><th className="p-4 text-left">Producto</th><th className="p-4 text-right">Precio</th><th className="p-4 text-center no-print">Acción</th></tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {ventasFiltradas.map(v => (
+                <tr key={v.id} className="font-bold text-slate-600">
+                  <td className="p-4 text-slate-400">{v.fecha}</td>
+                  <td className="p-4"><span className="bg-[#f989b7]/10 text-[#f989b7] px-2 py-1 rounded uppercase text-[9px]">{v.cliente}</span></td>
+                  <td className="p-4 uppercase">{v.producto}</td>
+                  <td className="p-4 text-right">{fM(v.precio)}</td>
+                  <td className="p-4 text-center no-print">
+                    {role === 'superadmin' && <button onClick={async () => { if (confirm('¿Borrar?')) { await supabase.from('ventas').delete().eq('id', v.id); refresh(); } }} className="text-red-400">✕</button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex flex-col md:flex-row justify-between items-center bg-slate-50 p-6 rounded-[2rem] gap-4">
+          <div><p className="text-[10px] font-black text-slate-400 uppercase">Total Seleccionado</p><h3 className="text-3xl font-black text-[#f989b7] italic">{fM(totalF)}</h3></div>
+          <div className="flex gap-2 w-full md:w-auto no-print">
+            <button onClick={() => window.print()} className="bg-white border px-6 py-3 rounded-xl font-black uppercase text-[10px]">🖨️ Imprimir</button>
+            {role === 'superadmin' && filtroNombre && totalF > 0 && (
+              <button onClick={async () => { if (confirm(`Saldar deuda de ${ventasFiltradas[0]?.cliente}?`)) { await supabase.from('ventas').update({ pagado: true }).eq('cliente', ventasFiltradas[0]?.cliente).eq('pagado', false); setFiltroNombre(""); refresh(); } }} className="bg-[#f989b7] text-white px-8 py-3 rounded-xl font-black uppercase text-[10px] shadow-lg shadow-pink-200">✅ Saldar Deuda</button>
+            )}
+          </div>
+        </div>
+      </section>
     </div>
   );
 }

@@ -1,0 +1,25 @@
+/* Estilos para controlar la visibilidad al imprimir */
+@media print {
+  /* Oculta cualquier elemento con la clase .no-print */
+  .no-print {
+    display: none !important;
+  }
+
+  /* Opcional: Ajustes para que la factura ocupe toda la hoja */
+  body {
+    background-color: white !important;
+    margin: 0;
+    padding: 0;
+  }
+
+  /* Asegura que el contenedor principal no tenga márgenes excesivos en papel */
+  .max-w-6xl {
+    max-width: 100% !important;
+    padding: 0 !important;
+  }
+
+  /* Quita sombras y bordes innecesarios en la impresión */
+  .shadow-sm, .shadow-lg {
+    box-shadow: none !important;
+  }
+}
